@@ -1,0 +1,9 @@
+{
+  "name": "stub",
+  "version": "1",
+  "vendor": "Stub",
+  "protocol": 1,
+  "entrypoint": "driver.py",
+  "installed_at": "2026-11-22T00:00:00Z",
+  "note": "Placeholder bytes that say so. The reference artefact for the conformance suite."
+}
