@@ -385,6 +385,17 @@ class SessionManager:
 
     def _spawn(self, artifact: Artifact, root: Path, options: Any) -> subprocess.Popen[bytes]:
         env = dict(os.environ)
+        # The child must not inherit the runtime's own credential. It is
+        # agent-written code, and holding the token would let it call back into
+        # this host and open a session for any *other* installed vendor, driving
+        # that vendor's key. One vendor today makes that a no-op; two vendors
+        # make it a privilege escalation across the boundary this container
+        # exists to draw.
+        #
+        # The vendor key is deliberately NOT scrubbed: `DATABENTO_API_KEY` is the
+        # credential the driver is here to use, and hiding it would break the
+        # only thing that needs it.
+        env.pop("DRIVER_RUNTIME_TOKEN", None)
         env["DRIVER_SESSION_ROOT"] = str(root)
         env["DATA_DOWNLOAD_DATASETS_DIR"] = str(self.datasets_dir)
         env["DATA_DOWNLOAD_DRIVERS_DIR"] = str(self.drivers_dir)

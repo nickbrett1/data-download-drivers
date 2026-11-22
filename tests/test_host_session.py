@@ -315,3 +315,139 @@ def test_a_hanging_driver_is_killed_at_the_deadline(tmp_path):
         assert session.closed or session.channel.proc.poll() is not None
     finally:
         run.close()
+
+
+PROBE_DRIVER = '''
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from data_download_drivers.child import serve
+
+
+class Probe:
+    """Reports what the child process can see. Never touches a file."""
+
+    def __init__(self, root, options):
+        self.root = root
+
+    def _seen(self):
+        return sorted(
+            key
+            for key in ("DRIVER_RUNTIME_TOKEN", "DATABENTO_API_KEY")
+            if key in os.environ
+        )
+
+    def resolve(self, **kwargs):
+        return {"symbols": list(kwargs.get("symbols") or []), "resolved": 1, "seen": self._seen()}
+
+    def cost(self, **kwargs):
+        return {"usd": 0.0}
+
+    def submit(self, **kwargs):
+        return {"vendor_job_id": "probe_1", "state": "submitted"}
+
+    def poll(self, **kwargs):
+        return {"state": "done"}
+
+    def list_files(self, **kwargs):
+        return {"files": []}
+
+    def fetch(self, **kwargs):
+        return {"written": []}
+
+    def convert(self, **kwargs):
+        return {"staged": []}
+
+    def verify(self, **kwargs):
+        return {"claimed": [], "manifest": [], "staged": {}, "seen": self._seen()}
+
+
+def build(root, options):
+    return Probe(root, options)
+
+
+if __name__ == "__main__":
+    raise SystemExit(serve(build))
+'''
+
+
+def _install_probe(drivers_dir: Path) -> None:
+    probe = drivers_dir / "probe" / "1"
+    probe.mkdir(parents=True)
+    (probe / "driver.py").write_text(PROBE_DRIVER, encoding="utf-8")
+    (probe / "manifest.json").write_text(
+        json.dumps(
+            {
+                "name": "probe",
+                "version": "1",
+                "vendor": "Probe",
+                "protocol": wire.PROTOCOL_VERSION,
+                "entrypoint": "driver.py",
+                "installed_at": "2026-11-22T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_the_child_cannot_read_the_runtimes_own_token(tmp_path, monkeypatch):
+    """The token protects the host from callers; the child must not become one.
+
+    A driver artefact is untrusted code. If it inherited `DRIVER_RUNTIME_TOKEN`
+    it could POST /v1/sessions for any *other* installed vendor and drive that
+    vendor's credential -- so the token is scrubbed before spawn. The vendor key
+    is the opposite case: scrubbing it would break the only thing that needs it,
+    so this test asserts it is still there, which is what stops the fix from
+    overshooting.
+    """
+    monkeypatch.setenv("DRIVER_RUNTIME_TOKEN", "do-not-leak-me")
+    monkeypatch.setenv("DATABENTO_API_KEY", "db-probe-key")
+
+    drivers = tmp_path / "drivers"
+    datasets = tmp_path / "datasets"
+    datasets.mkdir()
+    _install_probe(drivers)
+
+    run = Runtime(drivers, datasets)
+    try:
+        status, body = run.call(
+            "POST",
+            "/v1/sessions",
+            {
+                "protocol": wire.PROTOCOL_VERSION,
+                "driver": "probe",
+                "driver_version": "1",
+                "root": str(datasets / "probe" / "GLBX.MDP3" / "req_probe"),
+            },
+        )
+        assert status == 201, body
+        sid = body["session_id"]
+
+        status, body = run.call(
+            "POST",
+            "/v1/resolve",
+            {
+                "session_id": sid,
+                "dataset": "GLBX.MDP3",
+                "symbols": ["ES.c.0"],
+                "stype_in": "continuous",
+            },
+        )
+        assert status == 200, body
+        assert "DRIVER_RUNTIME_TOKEN" not in body["seen"]
+        # Scrubbed the token, not the environment: the vendor key is the point.
+        assert body["seen"] == ["DATABENTO_API_KEY"]
+
+        # And it is not merely hidden from this verb.
+        status, body = run.call("POST", "/v1/verify", {
+            "session_id": sid,
+            "dest": "files/",
+            "claimed": [],
+            "staged": [],
+        })
+        assert status == 200, body
+        assert body["seen"] == ["DATABENTO_API_KEY"]
+    finally:
+        run.close()
