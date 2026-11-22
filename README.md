@@ -155,6 +155,21 @@ begin `STUB:`, so no byte it produces can be mistaken for market data. Installin
 a driver is an atomic directory rename into the mounted volume — no image, no
 restart.
 
+**The image's own `drivers/` is not what the host reads.** `COPY . .` puts the
+repo's artefacts at `/app/drivers`, but discovery reads `DATA_DOWNLOAD_DRIVERS_DIR`
+(default `/drivers`), which compose mounts from the host. A bare `docker run` with
+no mount therefore starts healthy and lists **no drivers** — by design, because a
+second copy inside the image would be a second answer to "what is installed".
+To run the stub:
+
+```bash
+docker run --rm -p 127.0.0.1:8831:8831 \
+  -e DRIVER_RUNTIME_TOKEN=dev \
+  -v "$PWD/drivers:/drivers:ro" \
+  -v /tmp/datasets:/datasets \
+  ghcr.io/nickbrett1/data-download-drivers:latest
+```
+
 ### Environment
 
 | variable | default | meaning |
