@@ -1,77 +1,54 @@
-"""Entry point for data_download_drivers (python -m data_download_drivers).
+"""Entry point for data_download_drivers — the protocol host.
 
-Transport selection: `stdio` (the default, so a local client can spawn the
-module and inherit its own filesystem) or `streamable-http` (so the container
-image serves HTTP and answers the `http:/...` healthcheck its Dockerfile
-declares). The generated Dockerfile selects the HTTP transport by default; a
-local client runs the module with no arguments and gets stdio.
+`--transport`, `--host` and `--port` are kept because the **generated
+Dockerfile's CMD passes them** and Dockerfile is genproj-owned: it is rewritten
+on regeneration, so a flag removed here comes back as a container that will not
+start. `--transport` is therefore vestigial and accepted, not honoured -- both
+values serve the host, because the stdio variant answered nothing a client
+could use.
+
+The healthcheck the Dockerfile declares (`http:/healthz`) is answered by the
+host itself (`host.serve`), which is why this module no longer needs its own
+little health server.
 """
+
+from __future__ import annotations
 
 import argparse
 import os
-import sys
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-DEFAULT_PORT = int(os.environ.get("PORT", 8831))
-HEALTH_PATH = "/healthz"
-
-
-class _HealthHandler(BaseHTTPRequestHandler):
-    """Answer GET HEALTH_PATH with `{"status": "ok"}`; 404 everything else."""
-
-    def do_GET(self):
-        if self.path.split("?", 1)[0] == HEALTH_PATH:
-            body = b'{"status": "ok"}'
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        self.send_error(404)
-
-    def log_message(self, fmt, *args):
-        """Keep the default one-line-per-request stderr logging quiet."""
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="data_download_drivers",
-        description="data_download_drivers entry point (stdio by default).",
+        description="The driver protocol host: sessions, artefacts, eight verbs.",
     )
     parser.add_argument(
         "--transport",
         choices=["stdio", "streamable-http"],
-        default="stdio",
-        help="Transport to serve on (default: stdio).",
+        default="streamable-http",
+        help="Vestigial: kept because the generated Dockerfile passes it. "
+        "Both values serve the HTTP host.",
     )
     parser.add_argument(
         "--host",
         default="0.0.0.0",
-        help="Bind address for streamable-http (default: 0.0.0.0).",
+        help="Bind address (default: 0.0.0.0).",
     )
     parser.add_argument(
         "--port",
         type=int,
-        default=DEFAULT_PORT,
-        help=f"Port for streamable-http (default: {DEFAULT_PORT}).",
+        default=int(os.environ.get("DRIVER_HOST_PORT") or 8831),
+        help="Port (default: $DRIVER_HOST_PORT, else 8831).",
     )
     return parser
 
 
-def serve_http(host: str, port: int) -> None:
-    server = ThreadingHTTPServer((host, port), _HealthHandler)
-    print(f"serving http://{host}:{port}{HEALTH_PATH}", flush=True)
-    server.serve_forever()
-
-
 def main() -> int:
     args = build_parser().parse_args()
-    if args.transport == "streamable-http":
-        serve_http(args.host, args.port)
-        return 0
-    print(f"{__package__} is installed and importable.", file=sys.stderr)
-    return 0
+    from .host import serve
+
+    return serve(args.host, args.port)
 
 
 if __name__ == "__main__":
