@@ -421,6 +421,15 @@ def test_the_batchs_own_sidecar_files_are_claimed_as_themselves(vendor, tmp_path
     # is a file that is actually there.
     assert sorted(converted["staged"]) == evidence["claimed"]
     assert set(evidence["claimed"]) == set(evidence["staged"])
+    # Every landed file is in the manifest: the shared verifier reads a staged
+    # file the manifest omits as a contradiction, so a sidecar left out would
+    # quarantine an otherwise perfect landing.
+    assert [entry["name"] for entry in evidence["manifest"]] == evidence["claimed"]
+    assert [entry["rows"] for entry in evidence["manifest"] if entry["name"].endswith(".parquet")] == [7, 7]
+    assert [entry["rows"] for entry in evidence["manifest"] if entry["name"].endswith(".json")] == [None, None, None]
+    assert {entry["name"]: entry["sha256"] for entry in evidence["manifest"]} == {
+        name: got["sha256"] for name, got in evidence["staged"].items()
+    }
 
 
 def test_a_dropped_file_is_a_shortfall_not_a_silent_landing(vendor, tmp_path):

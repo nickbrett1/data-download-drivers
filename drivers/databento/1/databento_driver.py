@@ -414,10 +414,29 @@ class DatabentoDriver:
                 "integrity": self._mismatches(),
             }
 
-        manifest = [
-            {"name": name, "sha256": entry["sha256"], "rows": entry["rows"]}
-            for name, entry in sorted(self._converted.items())
-        ]
+        # `manifest` is every landed file this driver claims to have written, in
+        # landed vocabulary: the parquet for a converted file, the file's own
+        # name for a sidecar. It has to be *all* of them -- a file on disk that
+        # the manifest does not list is a contradiction to the shared verifier,
+        # not a harmless extra, and Databento publishes three sidecars beside
+        # every dataset.
+        manifest = []
+        for source in sorted(self._vendor_files):
+            landed = landed_name(source) if _is_convertible(source) else source
+            if landed not in staged:
+                continue  # never landed: claimed and absent, which is the shortfall
+            converted = self._converted.get(landed) or {}
+            downloaded = self._downloaded.get(source) or {}
+            manifest.append(
+                {
+                    "name": landed,
+                    "sha256": converted.get("sha256") or downloaded.get("sha256"),
+                    # Only a converted file has a row count read from the
+                    # vendor's bytes; a sidecar's line count would be a number
+                    # about JSON, dressed as a check on the data.
+                    "rows": converted.get("rows"),
+                }
+            )
         # Scope, in landed names: a conversion that dropped a file leaves its
         # parquet absent from `manifest` while still being claimed, which is a
         # shortfall -- the vendor did publish it, we just failed to land it.
