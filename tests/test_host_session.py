@@ -99,15 +99,23 @@ def test_healthz_and_discovery(runtime):
 
     status, body = run.call("GET", "/v1/drivers")
     assert status == 200
-    assert body["drivers"] == [
-        {
-            "name": "stub",
-            "version": "1",
-            "vendor": "Stub",
-            "protocol": 1,
-            "installed_at": "2026-11-22T00:00:00Z",
-        }
-    ]
+
+    # Discovery reports what is on disk, so the expectation is the manifests in
+    # `drivers/` rather than a hard-coded list: adding a vendor is a directory,
+    # not an edit here. (Asserting the exact list is how this test broke the day
+    # the databento artefact appeared next to the stub.)
+    manifests = sorted(REPO_DRIVERS.glob("*/*/manifest.json"))
+    declared = sorted(json.loads(path.read_text())["name"] for path in manifests)
+    assert [driver["name"] for driver in body["drivers"]] == declared
+
+    stub = {driver["name"]: driver for driver in body["drivers"]}["stub"]
+    assert stub == {
+        "name": "stub",
+        "version": "1",
+        "vendor": "Stub",
+        "protocol": 1,
+        "installed_at": "2026-11-22T00:00:00Z",
+    }
 
 
 def test_the_eight_verbs_land_a_file_that_says_it_is_not_data(runtime):

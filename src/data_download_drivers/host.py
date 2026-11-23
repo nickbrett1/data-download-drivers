@@ -31,7 +31,6 @@ import json
 import os
 import secrets
 import select
-import shutil
 import signal
 import subprocess
 import sys
@@ -409,7 +408,13 @@ class SessionManager:
             raise wire.WireError(
                 wire.DRIVER_MISSING, f"{artifact.name}: {entrypoint} is missing"
             )
-        python = shutil.which("python3") or sys.executable
+        # The interpreter that can import this package, not whatever `python3`
+        # happens to be first on PATH: a data-download-drivers installed in a venv
+        # whose bin/ is not on PATH would otherwise spawn children that cannot
+        # import `data_download_drivers.child` and every verb would answer
+        # "the driver process exited". The channel is JSON over stdio, so the
+        # child has no reason to want a different interpreter from this one.
+        python = sys.executable
         try:
             return subprocess.Popen(  # noqa: S603 - the artefact is the payload
                 [python, str(entrypoint)],
