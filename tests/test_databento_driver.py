@@ -392,6 +392,37 @@ def test_a_corrupt_download_is_not_converted_and_names_the_vendors_file(vendor, 
     assert len(evidence["integrity"]) == 2
 
 
+def test_the_batchs_own_sidecar_files_are_claimed_as_themselves(vendor, tmp_path):
+    """Databento publishes `manifest.json`, `condition.json` and `metadata.json`
+    beside the data. They are not convertible, so they land as themselves --
+    mapping every published name through `landed_name` claimed
+    `manifest.json.parquet`, a file that can never exist, and the shared verifier
+    read that as a shortfall on every job (seen against the live API,
+    2026-11-23)."""
+    vendor.published = {
+        **vendor.published,
+        "manifest.json": b'{"schema": "trades"}\n',
+        "condition.json": b'{"condition": "ok"}\n',
+        "metadata.json": b'{"dataset": "GLBX.MDP3"}\n',
+    }
+    vendor.served = dict(vendor.published)
+    driver = _driver(tmp_path)
+    _, _, written, converted, evidence = _wire_args(driver)
+
+    assert sorted(written) == sorted(vendor.published)
+    assert evidence["claimed"] == [
+        "GLBX.MDP3-20261001-TRD.parquet",
+        "GLBX.MDP3-20261002-TRD.parquet",
+        "condition.json",
+        "manifest.json",
+        "metadata.json",
+    ]
+    # The data is converted, the sidecars are left alone, and every claimed name
+    # is a file that is actually there.
+    assert sorted(converted["staged"]) == evidence["claimed"]
+    assert set(evidence["claimed"]) == set(evidence["staged"])
+
+
 def test_a_dropped_file_is_a_shortfall_not_a_silent_landing(vendor, tmp_path):
     """The vendor listed two files; only one survives conversion."""
     driver = _driver(tmp_path)

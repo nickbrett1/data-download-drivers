@@ -427,9 +427,17 @@ class DatabentoDriver:
     # -- internals -----------------------------------------------------------
 
     def _claimed_landed(self) -> list[dict[str, Any]]:
-        """One landed name per vendor file the job listed, in landed vocabulary."""
+        """One landed name per vendor file the job listed, in landed vocabulary.
+
+        Only the convertible files change name. Databento also publishes
+        `manifest.json`, `condition.json` and `metadata.json` beside the data --
+        its own description of the batch -- and those land as themselves. Mapping
+        every published file through `landed_name` claimed `manifest.json.parquet`
+        and friends, files that can never exist, which the shared verifier would
+        read as a shortfall on every single job.
+        """
         return [
-            {"name": landed_name(name), "source": name}
+            {"name": landed_name(name) if _is_convertible(name) else name, "source": name}
             for name in sorted(self._vendor_files)
         ]
 
