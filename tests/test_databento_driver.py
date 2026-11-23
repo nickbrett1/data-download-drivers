@@ -59,6 +59,10 @@ class FakeBatch:
 
     def get_job_details(self, job_id):
         self.vendor.calls.append(("get_job_details", {"job_id": job_id}))
+        if self.vendor.details_seconds and self.vendor.on_details:
+            # The test owns the clock: it advances the driver's `monotonic` so a
+            # slow vendor call is simulated without sleeping.
+            self.vendor.on_details(self.vendor.details_seconds)
         return self.vendor.states.pop(0) if self.vendor.states else {
             "state": "done",
             "record_count": self.vendor.records,
@@ -165,6 +169,8 @@ class FakeVendor:
         self.states: list[dict] = []
         self.usd = 1.2345
         self.unresolvable = False
+        self.details_seconds = 0.0
+        self.on_details = None
         self.records = 7
         self.parquet_rows = 7
 
@@ -450,7 +456,7 @@ def test_a_dropped_file_is_a_shortfall_not_a_silent_landing(vendor, tmp_path):
 
 
 def test_poll_maps_states_and_never_sleeps_past_the_deadline(vendor, tmp_path, monkeypatch):
-    from databento_driver import POLL_SLEEP_CAP_S
+    from databento_driver import POLL_BUDGET_S
 
     slept: list[float] = []
     monkeypatch.setattr("databento_driver.time.sleep", slept.append)
@@ -465,9 +471,47 @@ def test_poll_maps_states_and_never_sleeps_past_the_deadline(vendor, tmp_path, m
     third = driver.poll(vendor_job_id="job-1", interval_s=300)
 
     assert (first["state"], second["state"], third["state"]) == ("queued", "running", "done")
-    assert slept == [POLL_SLEEP_CAP_S, POLL_SLEEP_CAP_S]  # not the Job's 300 s
+    # Not the Job's 300 s: the pause is what is left of the verb's budget, so
+    # `get_job_details`' own (real, small) latency comes off the top.
+    assert len(slept) == 2
+    assert all(POLL_BUDGET_S - 0.5 < pause <= POLL_BUDGET_S for pause in slept)
     assert slept[0] < wire.DEADLINES["poll"]
     assert third["record_count"] == 7
+
+
+def test_a_slow_job_details_call_eats_into_the_pause(vendor, tmp_path, monkeypatch):
+    """The budget covers the whole verb, not just the sleep.
+
+    Seen live: `get_job_details` took seconds, the driver then slept its full 20 s
+    on top, and the host killed the session at 30 s -- "poll refused: 504 timeout
+    (poll exceeded 30s; the driver was killed)", on a job that was merely queued.
+    """
+    from databento_driver import POLL_BUDGET_S
+
+    clock = {"now": 1000.0}
+    slept: list[float] = []
+    monkeypatch.setattr("databento_driver.time.monotonic", lambda: clock["now"])
+    monkeypatch.setattr(
+        "databento_driver.time.sleep",
+        lambda seconds: (slept.append(seconds), clock.__setitem__("now", clock["now"] + seconds)),
+    )
+    def slow(seconds: float) -> None:
+        clock["now"] += seconds
+
+    vendor.on_details = slow
+    vendor.states = [{"state": "queued"}, {"state": "queued"}]
+    vendor.details_seconds = 12.0  # the vendor's own latency
+
+    driver = _driver(tmp_path)
+    driver.poll(vendor_job_id="job-1", interval_s=30)
+    assert slept == [POLL_BUDGET_S - 12.0]
+
+    # And with a details call slower than the whole budget, the driver does not
+    # sleep at all rather than doubling the overrun.
+    slept.clear()
+    vendor.details_seconds = 25.0
+    driver.poll(vendor_job_id="job-1", interval_s=30)
+    assert slept == []
 
 
 def test_an_expired_job_reports_a_terminal_state(vendor, tmp_path):

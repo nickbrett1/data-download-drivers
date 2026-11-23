@@ -94,3 +94,8 @@ def test_costing_is_allowed_to_be_slow():
     "cost exceeded 30s; the driver was killed".
     """
     assert wire.DEADLINES["cost"] >= 60
+
+
+def test_polling_is_allowed_to_be_slow():
+    """The pause inside `poll` shares its deadline with the vendor's own call."""
+    assert wire.DEADLINES["poll"] >= 60

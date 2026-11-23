@@ -53,7 +53,11 @@ DEADLINES = {
     "resolve": 30,
     "cost": 120,
     "submit": 60,
-    "poll": 30,
+    # `poll` is 60 for the same reason as `cost`: the vendor's own
+    # `get_job_details` measured up to 28 s, and the driver's pause inside the
+    # verb is a *budget* it shares with that call. 30 left no room for a slow
+    # answer plus any pause at all.
+    "poll": 60,
     "list_files": 120,
     "fetch": 300,
     "convert": 300,

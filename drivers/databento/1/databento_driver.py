@@ -63,10 +63,12 @@ VERSION = "1"
 #: through the wire would be a secret in a log.
 API_KEY_ENV = "DATABENTO_API_KEY"
 
-#: How long a `poll` may sleep while the job is still running. The verb's
-#: deadline is 30 s (`wire.DEADLINES`), so the pause stays well under it: a
-#: sleep that races the deadline turns "still queued" into a `timeout` error.
-POLL_SLEEP_CAP_S = 20
+#: How long a `poll` should spend, in total, before it answers "not yet". The
+#: verb's deadline is 30 s (`wire.DEADLINES`), so this is the budget for the
+#: *whole* call -- the vendor's own `get_job_details` can take seconds, and a
+#: fixed sleep on top of a slow call is how "still queued" became
+#: "poll exceeded 30s; the driver was killed" (seen live, 2026-11-23).
+POLL_BUDGET_S = 20
 
 #: Databento's job states, mapped onto the four words the interpreter knows
 #: (`queued` and `pending` mean ask again, `done` means stop, anything else is
@@ -259,11 +261,15 @@ class DatabentoDriver:
         waiting belongs here -- and it is capped below the verb's deadline
         rather than trusting the Job's `interval_s` to be sane.
         """
+        started = time.monotonic()
         details = self.client.batch.get_job_details(job_id=_need(kwargs, "vendor_job_id"))
         raw = str((details or {}).get("state") or "").lower()
         state = PENDING_STATES.get(raw, raw)
         if state != DONE_STATE and state in {"queued", "running"}:
-            pause = min(float(kwargs.get("interval_s") or 30), POLL_SLEEP_CAP_S)
+            # What is left of the budget after asking, never the interval alone:
+            # the pause is what makes the verb's own duration unpredictable.
+            pause = min(float(kwargs.get("interval_s") or 30),
+                        max(0.0, POLL_BUDGET_S - (time.monotonic() - started)))
             if pause > 0:
                 time.sleep(pause)
         return {
