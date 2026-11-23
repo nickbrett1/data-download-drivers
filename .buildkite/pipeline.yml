@@ -33,7 +33,9 @@ steps:
       - python -m pip install --no-cache-dir -e ".[dev]"
       - python -m pip install --no-cache-dir build
       - python -m build
-      - ruff check src tests
+      # `drivers` too: an artefact is agent-written code that ships to a
+      # container holding a vendor credential, so it is linted like the rest.
+      - ruff check src tests drivers
       - pytest -q
 
   - label: ":male-doctor: Smoke test image (starts and serves HTTP)"

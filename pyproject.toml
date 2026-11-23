@@ -6,6 +6,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "databento>=0.40",
+    # Used directly by the databento artefact (parquet row counts), and by
+    # DBNStore.to_parquet. databento depends on it too, but we import it.
+    "pyarrow>=13.0",
     "zstandard>=0.23"
 ]
 
@@ -26,7 +29,7 @@ where = ["src"]
 testpaths = ["tests"]
 
 [tool.ruff]
-src = ["src", "tests"]
+src = ["src", "tests", "drivers"]
 # Pin the language level. Without it ruff infers target-version from
 # requires-python, and target-gated rules (e.g. UP017 "use datetime.UTC") then
 # switch on or off depending on how the config resolved.

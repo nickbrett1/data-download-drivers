@@ -1,0 +1,9 @@
+{
+  "name": "databento",
+  "version": "1",
+  "vendor": "Databento",
+  "protocol": 1,
+  "entrypoint": "driver.py",
+  "installed_at": "2026-11-23T00:00:00Z",
+  "note": "The real vendor: batch jobs, the vendor's own manifest as evidence, .dbn.zst kept byte-identical, converted to parquet with the source's record count carried across."
+}
