@@ -162,15 +162,20 @@ class DatabentoDriver:
             start_date=start,
             end_date=end,
         )
-        resolved = answer.get("result") if isinstance(answer, dict) else None
-        not_found = []
+        # The shape, as the API answers it: `result` is {symbol: [{d0, d1, s}]},
+        # and `not_found` is a top-level list. `s` is the instrument id; an
+        # interval with an empty `s` is a gap in the mapping, not a symbol.
+        answer = answer if isinstance(answer, dict) else {}
+        resolved = answer.get("result")
+        resolved = resolved if isinstance(resolved, dict) else {}
+        not_found = [str(symbol) for symbol in (answer.get("not_found") or [])]
         mapped = 0
-        for mapping in resolved or []:
-            for symbol, intervals in (mapping.get("s") or {}).items():
-                if any(_is_not_found(entry) for entry in intervals):
-                    not_found.append(symbol)
-                else:
-                    mapped += 1
+        for symbol, intervals in resolved.items():
+            usable = [entry for entry in (intervals or []) if not _is_not_found(entry)]
+            if usable:
+                mapped += 1
+            elif symbol not in not_found:
+                not_found.append(str(symbol))
         if not_found:
             # A symbol that maps to nothing is not a vendor outage: it is a
             # request that cannot be answered, and submitting it would spend
@@ -186,7 +191,12 @@ class DatabentoDriver:
             "resolved": mapped,
             "stype_in": stype_in,
             "stype_out": "instrument_id",
-            "window": {"start": start.isoformat(), "end": end.isoformat(), "note": "recent, not the request's"},
+            "partial": list(answer.get("partial") or []),
+            "window": {
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "note": "recent, not the request's",
+            },
         }
 
     def cost(self, **kwargs: Any) -> dict[str, Any]:

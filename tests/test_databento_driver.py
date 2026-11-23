@@ -117,27 +117,28 @@ class FakeSymbology:
         self.vendor = vendor
 
     def resolve(self, **kwargs):
+        """The API's shape, checked against the live endpoint 2026-11-23."""
         self.vendor.calls.append(("resolve", kwargs))
+        symbols = kwargs["symbols"]
         if self.vendor.unresolvable:
             return {
-                "result": [
-                    {
-                        "s": {
-                            symbol: [{"s": "", "d0": "", "d1": ""}]
-                            for symbol in kwargs["symbols"]
-                        }
-                    }
-                ]
+                "result": {},
+                "symbols": symbols,
+                "not_found": list(symbols),
+                "partial": [],
+                "message": "OK",
+                "status": 0,
             }
         return {
-            "result": [
-                {
-                    "s": {
-                        symbol: [{"s": f"inst-{index}", "d0": "2026-01-01", "d1": "2026-12-31"}]
-                        for index, symbol in enumerate(kwargs["symbols"])
-                    }
-                }
-            ]
+            "result": {
+                symbol: [{"d0": "2026-01-01", "d1": "2026-12-31", "s": f"inst-{index}"}]
+                for index, symbol in enumerate(symbols)
+            },
+            "symbols": symbols,
+            "not_found": [],
+            "partial": [],
+            "message": "OK",
+            "status": 0,
         }
 
 
@@ -442,6 +443,24 @@ def test_an_unresolvable_symbol_is_refused_before_anything_is_spent(vendor, tmp_
         driver.resolve(dataset="GLBX.MDP3", symbols=["NOPE.c.0"], stype_in="continuous")
     assert "NOPE.c.0" in caught.value.detail
     assert [verb for verb, _ in vendor.calls] == ["resolve"]
+
+
+def test_resolve_reports_the_api_shape_it_was_given(vendor, tmp_path):
+    """`result` is a dict, `not_found` is a top-level list.
+
+    Getting this wrong is not cosmetic: the live endpoint answered 200 and the
+    driver read `result` as a list of `{"s": {...}}`, which is the shape of a
+    different Databento call. The session then failed with an AttributeError
+    that said nothing about symbology.
+    """
+    driver = _driver(tmp_path)
+    answer = driver.resolve(
+        dataset="GLBX.MDP3", symbols=["ES.c.0", "NQ.c.0"], stype_in="continuous"
+    )
+    assert answer["resolved"] == 2
+    assert answer["symbols"] == ["ES.c.0", "NQ.c.0"]
+    assert answer["stype_out"] == "instrument_id"
+    assert answer["window"]["note"] == "recent, not the request's"
 
 
 def test_cost_answers_the_amount_the_vendor_quoted(vendor, tmp_path):
