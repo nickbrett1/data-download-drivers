@@ -84,3 +84,13 @@ def test_codes_map_to_statuses_and_none_are_invented():
     assert wire.STATUS[wire.BUDGET_REFUSED] == 422
     assert wire.STATUS[wire.DRIVER_MISSING] == 409
     assert wire.STATUS[wire.TIMEOUT] == 504
+
+
+def test_costing_is_allowed_to_be_slow():
+    """A price is free and idempotent, so the deadline bounds a hang, not a scan.
+
+    Databento prices a window server-side: one day of ES trades measured 0.1 s to
+    28 s across repeated calls, and 30 s turned a working vendor into
+    "cost exceeded 30s; the driver was killed".
+    """
+    assert wire.DEADLINES["cost"] >= 60

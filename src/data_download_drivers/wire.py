@@ -42,9 +42,16 @@ VERBS = (
 #: Per-verb deadline, seconds, enforced by the host *and* by the client. A hung
 #: `fetch` is otherwise an attempt that never settles and a lease that never
 #: releases.
+#: How long a verb may take before the host kills the session.
+#:
+#: These bound a *hang*, not the vendor's best case. `cost` is 120 s because
+#: Databento prices a window server-side and the query scans it: one day of ES
+#: trades measured 0.1 s to 28 s across repeated calls (2026-11-23), so 30 s
+#: turned a slow-but-working vendor into "cost exceeded 30s". A price is free
+#: and idempotent, which is why patience here costs nothing.
 DEADLINES = {
     "resolve": 30,
-    "cost": 30,
+    "cost": 120,
     "submit": 60,
     "poll": 30,
     "list_files": 120,
