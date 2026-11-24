@@ -49,7 +49,7 @@ from __future__ import annotations
 import hashlib
 import os
 import time
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -140,7 +140,100 @@ class DatabentoDriver:
         self._connect()
         return self._db
 
-    # -- the eight verbs -----------------------------------------------------
+    # -- the nine verbs -----------------------------------------------------
+
+    def describe(self, **kwargs: Any) -> dict[str, Any]:
+        """What the vendor says this dataset code *is*. Free, and not a Job.
+
+        A dataset code is the vendor's vocabulary, and `GLBX.MDP3` is a name
+        only a market-data reader can expand. Databento publishes the expansion
+        itself, in three answers:
+
+        * `metadata.list_publishers()` -- `{dataset, venue, description}`, one
+          row per publisher;
+        * `metadata.get_dataset_range(dataset)` -- when data starts, overall and
+          per schema;
+        * `metadata.list_schemas(dataset)` -- which record types exist at all.
+
+        The trap is that **descriptions are per publisher, and a code can have
+        many**: `DBEQ.BASIC` has six, one per venue ("DBEQ Basic - NYSE Texas",
+        "… - IEX", and so on), and picking the first would label a consolidated
+        dataset after one exchange. The dataset-level name is the row whose
+        venue equals the code's own prefix (`GLBX.MDP3` -> GLBX,
+        `DBEQ.BASIC` -> DBEQ, `EQUS.MINI` -> EQUS); the rest are the venues
+        inside it, which are returned as `venues` rather than thrown away.
+
+        Answering "I do not know this code" is a real answer, not a failure:
+        `described` is False and the client shows the code with no claim
+        attached. A `WireError` here would make an unknown code look like a
+        broken driver.
+        """
+        dataset = _need(kwargs, "dataset")
+        client = self.client
+
+        publishers = self._publishers(dataset)
+        range_: dict[str, Any] = {}
+        unavailable = ""
+        try:
+            range_ = client.metadata.get_dataset_range(dataset) or {}
+        except Exception as exc:  # noqa: BLE001 - the catalogue is a courtesy
+            # An unknown dataset is an error here and a normal answer below;
+            # anything else is the vendor being unavailable for a fact we can
+            # live without, so it is reported rather than raised. The note
+            # travels in the answer, because "no range" and "could not ask"
+            # are different facts about a code.
+            unavailable = str(exc)
+        try:
+            schemas = list(client.metadata.list_schemas(dataset) or [])
+        except Exception:  # noqa: BLE001 - see above
+            schemas = []
+
+        prefix = dataset.split(".", 1)[0]
+        chosen = next(
+            (row for row in publishers if str(row.get("venue")) == prefix), None
+        ) or (publishers[0] if publishers else None)
+
+        return {
+            "dataset": dataset,
+            "described": chosen is not None,
+            "description": str((chosen or {}).get("description") or ""),
+            "venue": str((chosen or {}).get("venue") or ""),
+            "venues": sorted(
+                {str(row.get("venue")) for row in publishers if row.get("venue")}
+            ),
+            "publishers": [
+                {
+                    "venue": str(row.get("venue") or ""),
+                    "description": str(row.get("description") or ""),
+                }
+                for row in publishers
+            ],
+            "range": (
+                {"start": range_.get("start"), "end": range_.get("end")}
+                if not unavailable
+                else {"start": None, "end": None, "unavailable": unavailable}
+            ),
+            "schemas": schemas,
+            "fetched_at": _now(),
+        }
+
+    def _publishers(self, dataset: str) -> list[dict[str, Any]]:
+        """The vendor's publisher rows for one code, or `[]`.
+
+        `list_publishers` answers for *every* dataset (155 rows live), so the
+        filter is ours. It is fetched per call rather than cached across
+        sessions because a driver session is one Job and a licence to keep state
+        is a licence to serve a stale catalogue.
+        """
+        try:
+            rows = self.client.metadata.list_publishers() or []
+        except Exception:  # noqa: BLE001 - an unknown code answers "undescribed"
+            return []
+        return [
+            row
+            for row in rows
+            if isinstance(row, dict) and str(row.get("dataset") or "") == dataset
+        ]
 
     def resolve(self, **kwargs: Any) -> dict[str, Any]:
         """Is the symbology resolvable at all? The cheapest failure there is.
@@ -591,6 +684,12 @@ def _hoist(dest: Path, job_id: str, name: str) -> Path:
         except OSError:
             pass  # another file for this job is still there
     return landed
+
+
+def _now() -> str:
+    """UTC, to the second. The catalogue's age is shown, so it has to be a
+    timestamp the reader can subtract from -- not a monotonic counter."""
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _need(kwargs: dict[str, Any], name: str) -> str:

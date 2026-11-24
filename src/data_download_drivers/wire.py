@@ -1,4 +1,4 @@
-"""The driver wire: eight verbs, JSON in, JSON out (spec `driver-protocol` §4).
+"""The driver wire: nine verbs, JSON in, JSON out (spec `driver-protocol` §4).
 
 This module is the contract *as data*: the verb list, the fields each verb
 requires, the deadline each verb gets, and the error codes. Nothing here talks
@@ -29,6 +29,11 @@ from typing import Any
 PROTOCOL_VERSION = 1
 
 VERBS = (
+    # `describe` comes first because it is the question asked before any Job
+    # exists: what *is* this dataset code? It is free and idempotent, so a
+    # client may ask it as often as it likes, and a vendor that cannot answer
+    # it is a fact worth showing rather than an error to hide.
+    "describe",
     "resolve",
     "cost",
     "submit",
@@ -50,6 +55,10 @@ VERBS = (
 #: turned a slow-but-working vendor into "cost exceeded 30s". A price is free
 #: and idempotent, which is why patience here costs nothing.
 DEADLINES = {
+    # Cheap, but a catalogue read is the vendor's whole publisher list: 155 rows
+    # live, answered in about a second. 60 so a cold SDK import plus a slow
+    # first response cannot turn "the vendor is slow" into "no driver".
+    "describe": 60,
     "resolve": 30,
     "cost": 120,
     "submit": 60,
@@ -88,6 +97,7 @@ STATUS = {
 
 #: Fields every verb needs, beyond `session_id`.
 REQUIRED: dict[str, tuple[str, ...]] = {
+    "describe": ("dataset",),
     "resolve": ("dataset", "symbols", "stype_in"),
     "cost": ("dataset", "schema", "symbols", "stype_in", "start", "end"),
     "submit": (

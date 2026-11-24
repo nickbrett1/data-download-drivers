@@ -52,7 +52,29 @@ class StubDriver:
         self._submitted: dict[str, Any] = {}
         self._vendor_job_id = ""
 
-    # -- the eight verbs ----------------------------------------------------
+    # -- the nine verbs -----------------------------------------------------
+
+    def describe(self, **kwargs: Any) -> dict[str, Any]:
+        """A plausible catalogue answer, so the stub exercises the verb.
+
+        Named as a stub, not as the code the caller asked about: a fake that
+        echoed a real description would be indistinguishable from a vendor's
+        answer, which is the same reason its landings say `StubDatabentoDriver`.
+        """
+        dataset = str(kwargs.get("dataset") or "")
+        return {
+            "dataset": dataset,
+            "described": True,
+            "description": f"Stub dataset {dataset}",
+            "venue": dataset.split(".", 1)[0],
+            "venues": [dataset.split(".", 1)[0]],
+            "publishers": [],
+            "range": {"start": "2026-01-01T00:00:00.000000000Z",
+                      "end": "2026-12-31T00:00:00.000000000Z"},
+            "schemas": ["ohlcv-1d"],
+            "fetched_at": "2026-01-01T00:00:00Z",
+            "stub": True,
+        }
 
     def resolve(self, **kwargs: Any) -> dict[str, Any]:
         symbols = kwargs.get("symbols") or []

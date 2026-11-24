@@ -115,6 +115,22 @@ class FakeMetadata:
         self.vendor.calls.append(("get_cost", kwargs))
         return self.vendor.usd
 
+    def list_publishers(self):
+        """The live shape (2026-11-23): one row per publisher, so a code that
+        several venues report under appears several times."""
+        self.vendor.calls.append(("list_publishers", {}))
+        return [dict(row) for row in self.vendor.publishers]
+
+    def get_dataset_range(self, dataset):
+        self.vendor.calls.append(("get_dataset_range", {"dataset": dataset}))
+        if dataset not in self.vendor.ranges:
+            raise RuntimeError(f"unknown dataset {dataset!r}")
+        return dict(self.vendor.ranges[dataset])
+
+    def list_schemas(self, dataset):
+        self.vendor.calls.append(("list_schemas", {"dataset": dataset}))
+        return list(self.vendor.schemas.get(dataset, []))
+
 
 class FakeSymbology:
     def __init__(self, vendor: FakeVendor) -> None:
@@ -173,6 +189,35 @@ class FakeVendor:
         self.on_details = None
         self.records = 7
         self.parquet_rows = 7
+        #: The vendor's catalogue, in `list_publishers` shape.
+        self.publishers = [
+            {
+                "publisher_id": 1,
+                "dataset": "GLBX.MDP3",
+                "venue": "GLBX",
+                "description": "CME Globex MDP 3.0",
+            },
+            # Six publishers for one code: the case a naive join gets wrong.
+            {
+                "publisher_id": 39,
+                "dataset": "DBEQ.BASIC",
+                "venue": "XCHI",
+                "description": "DBEQ Basic - NYSE Texas",
+            },
+            {
+                "publisher_id": 59,
+                "dataset": "DBEQ.BASIC",
+                "venue": "DBEQ",
+                "description": "Databento US Equities Basic - Consolidated",
+            },
+        ]
+        self.ranges = {
+            "GLBX.MDP3": {
+                "start": "2010-06-06T00:00:00.000000000Z",
+                "end": "2026-11-23T19:14:00.000000000Z",
+            }
+        }
+        self.schemas = {"GLBX.MDP3": ["mbo", "trades", "ohlcv-1d"]}
 
     def module(self):
         vendor = self
@@ -565,3 +610,56 @@ def test_a_dest_that_escapes_the_session_root_is_refused(vendor, tmp_path):
     (tmp_path / "root").mkdir(parents=True, exist_ok=True)
     with pytest.raises(wire.WireError):
         driver.fetch(vendor_job_id="job-1", dest="../../etc", files=[])
+
+
+# -- the catalogue: what the code means --------------------------------------
+
+
+def test_describe_names_the_dataset_level_publisher(vendor, tmp_path):
+    """Six publishers, one code: the dataset-level row is the one whose venue is
+    the code's own prefix, and the rest are venues inside it."""
+    driver = _driver(tmp_path)
+
+    answer = driver.describe(dataset="GLBX.MDP3")
+    assert answer["described"] is True
+    assert answer["description"] == "CME Globex MDP 3.0"
+    assert answer["venue"] == "GLBX"
+
+    basic = driver.describe(dataset="DBEQ.BASIC")
+    # Not "DBEQ Basic - NYSE Texas", which is what taking the first row gives.
+    assert basic["description"] == "Databento US Equities Basic - Consolidated"
+    assert basic["venue"] == "DBEQ"
+    assert basic["venues"] == ["DBEQ", "XCHI"]
+
+
+def test_describe_carries_the_range_and_the_schemas(vendor, tmp_path):
+    driver = _driver(tmp_path)
+    answer = driver.describe(dataset="GLBX.MDP3")
+
+    assert answer["range"]["start"].startswith("2010-06-06")
+    assert answer["schemas"] == ["mbo", "trades", "ohlcv-1d"]
+    assert answer["fetched_at"].endswith("Z")
+
+
+def test_an_undescribed_code_is_an_answer_not_a_failure(vendor, tmp_path):
+    """An unknown code must not look like a broken driver: the app shows the
+    code with nothing claimed about it, which is the truth."""
+    driver = _driver(tmp_path)
+    answer = driver.describe(dataset="NOPE.UNKNOWN")
+
+    assert answer["described"] is False
+    assert answer["description"] == ""
+    assert answer["publishers"] == []
+    assert answer["schemas"] == []
+    # The range call fails for an unknown dataset and is reported, not raised.
+    assert "unavailable" in answer["range"]
+
+
+def test_describe_costs_nothing_and_submits_nothing(vendor, tmp_path):
+    """It is a catalogue read: no job, no spend, so it may be asked freely."""
+    driver = _driver(tmp_path)
+    driver.describe(dataset="GLBX.MDP3")
+
+    verbs = [name for name, _ in vendor.calls]
+    assert "get_cost" not in verbs
+    assert "submit_job" not in verbs

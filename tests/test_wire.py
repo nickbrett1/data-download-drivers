@@ -99,3 +99,14 @@ def test_costing_is_allowed_to_be_slow():
 def test_polling_is_allowed_to_be_slow():
     """The pause inside `poll` shares its deadline with the vendor's own call."""
     assert wire.DEADLINES["poll"] >= 60
+
+
+def test_describing_a_dataset_requires_one_and_gets_60s():
+    """A catalogue read is free and idempotent, so patience costs nothing --
+    but the deadline still has to exist, because a hang is a hang."""
+    with pytest.raises(wire.WireError):
+        wire.validate("describe", {"session_id": "s"})
+    assert wire.DEADLINES["describe"] == 60
+    assert wire.validate("describe", {"session_id": "s", "dataset": "GLBX.MDP3"})[
+        "dataset"
+    ] == "GLBX.MDP3"
