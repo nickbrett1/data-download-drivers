@@ -42,6 +42,11 @@ Two honest limits, written down rather than papered over:
   the records decodes it again, so a large day costs two passes. That is the
   price of a row count that comes from the vendor's bytes rather than from the
   file we just wrote, and the verb's 300 s deadline is the real bound.
+* **One encoding, refused rather than faked.** This driver converts DBN to
+  parquet and counts those records. A Job that asks for `csv` or `json` has no
+  record decoder here and no way to honour the convert step, so `submit`
+  refuses it *before* the vendor is paid -- with the encoding named -- instead
+  of landing files the Job cannot convert and calling that a success.
 """
 
 from __future__ import annotations
@@ -80,6 +85,14 @@ DONE_STATE = "done"
 #: claims to verify: `split_duration` reaches the vendor as given, and the files
 #: that come back are one per day per schema.
 CONVERTIBLE = {".dbn", ".dbn.zst"}
+
+#: The one encoding this driver can carry a row count across. `convert` turns
+#: DBN records into parquet and counts those records; for CSV or JSON the SDK
+#: has no record decoder, so the count would be a line count dressed as a check
+#: on the data -- and the Job's convert step demands parquet, so a CSV landing
+#: could not honour it at all. Refused at `submit`, before any spend, rather
+#: than discovered at `convert` after the vendor has been paid.
+SUPPORTED_ENCODING = "dbn"
 
 
 class DatabentoDriver:
@@ -322,6 +335,17 @@ class DatabentoDriver:
 
     def submit(self, **kwargs: Any) -> dict[str, Any]:
         """Start a batch job. The job id is the anchor for everything after it."""
+        encoding = str(kwargs.get("encoding") or SUPPORTED_ENCODING)
+        if encoding != SUPPORTED_ENCODING:
+            # The Job always asks for parquet on the way out, and only DBN can
+            # be counted as records and decoded. Refusing here costs nothing;
+            # refusing at `convert` would be after the vendor was paid.
+            raise WireError(
+                BAD_REQUEST,
+                f"this driver lands parquet from {SUPPORTED_ENCODING!r}; the Job "
+                f"asks for encoding {encoding!r}, which has no record count to "
+                "carry across and no parquet conversion here",
+            )
         self._submitted = {k: v for k, v in kwargs.items() if k != "session_id"}
         job = self.client.batch.submit_job(
             dataset=_need(kwargs, "dataset"),
@@ -334,7 +358,7 @@ class DatabentoDriver:
             stype_out="instrument_id",
             start=_need(kwargs, "start"),
             end=_need(kwargs, "end"),
-            encoding=str(kwargs.get("encoding") or "dbn"),
+            encoding=encoding,
             compression=str(kwargs.get("compression") or "zstd"),
             split_duration=str(kwargs.get("split_duration") or "day"),
             # One file per symbol would multiply the manifest by the symbol
@@ -431,8 +455,10 @@ class DatabentoDriver:
                     "vendor_error",
                     f"Databento published {name!r} but the download did not create it",
                 )
-            payload = path.read_bytes()
-            actual = hashlib.sha256(payload).hexdigest()
+            # Hashed in chunks, not read whole: a day of `mbo` is gigabytes and
+            # this process has rlimits. The digest is over the same bytes the
+            # SDK wrote, so the manifest comparison is unchanged.
+            actual, size = _file_digest(path)
             expected = str(
                 (entry or {}).get("sha256")
                 or (self._vendor_files.get(name) or {}).get("sha256")
@@ -441,7 +467,7 @@ class DatabentoDriver:
             self._downloaded[name] = {
                 "sha256": actual,
                 "vendor_sha256": expected,
-                "bytes": len(payload),
+                "bytes": size,
                 "verified": bool(expected) and actual == expected,
             }
             written.append(name)
@@ -455,9 +481,20 @@ class DatabentoDriver:
         the vendor's vocabulary is what lets `verify` name the file that failed.
         """
         dest = self._dest(_literal(kwargs.get("dest"), "dest"))
+        source_format = str(kwargs.get("from") or "")
         target = str(kwargs.get("to") or "")
         if target != "parquet":
             raise WireError(BAD_REQUEST, f"this driver converts to parquet, not {target!r}")
+        if source_format != SUPPORTED_ENCODING:
+            # `submit` refuses an encoding this cannot convert, so reaching here
+            # means the Job and the landing disagree. Refusing keeps "the
+            # convert step did what it said" true instead of reporting a landing
+            # of CSV files as a successful conversion to parquet.
+            raise WireError(
+                BAD_REQUEST,
+                f"this driver converts {SUPPORTED_ENCODING!r} to parquet, not "
+                f"{source_format!r}; nothing on disk was changed",
+            )
 
         if self._mismatches():
             self._stage = "downloaded"
@@ -472,11 +509,11 @@ class DatabentoDriver:
             landed = source.with_name(landed_name(source.name))
             rows = self._count_records(source)
             self.db.DBNStore.from_file(source).to_parquet(landed)
-            payload = landed.read_bytes()
+            digest, size = _file_digest(landed)
             self._converted[landed.name] = {
-                "sha256": hashlib.sha256(payload).hexdigest(),
+                "sha256": digest,
                 "rows": rows,
-                "bytes": len(payload),
+                "bytes": size,
                 "source": source.name,
                 # Provenance: this parquet describes these vendor bytes, and the
                 # count next to it is the count read from them.
@@ -608,16 +645,33 @@ def staged_files(dest: Path) -> dict[str, dict[str, Any]]:
     for path in sorted(dest.iterdir()):
         if not path.is_file():
             continue
-        payload = path.read_bytes()
+        digest, size = _file_digest(path)
         staged[path.name] = {
-            "sha256": hashlib.sha256(payload).hexdigest(),
-            "rows": _rows(path, payload),
-            "bytes": len(payload),
+            "sha256": digest,
+            "rows": _rows(path),
+            "bytes": size,
         }
     return staged
 
 
-def _rows(path: Path, payload: bytes) -> int | None:
+def _file_digest(path: Path, chunk_size: int = 1 << 20) -> tuple[str, int]:
+    """`(sha256, bytes)` without holding the file in memory.
+
+    A day of `mbo` is measured in gigabytes; `read_bytes()` on it is an OOM in a
+    process the host runs under rlimits, and the digest only needs one chunk at
+    a time. The size comes from the bytes actually read, so a short read is a
+    size that disagrees with the manifest rather than one that hides it.
+    """
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(chunk_size), b""):
+            digest.update(chunk)
+            size += len(chunk)
+    return digest.hexdigest(), size
+
+
+def _rows(path: Path) -> int | None:
     if path.suffix == ".parquet":
         import pyarrow.parquet as pq  # noqa: PLC0415 - only a parquet landing needs it
 
@@ -627,6 +681,7 @@ def _rows(path: Path, payload: bytes) -> int | None:
         # driver reads it when it converts. Counting newlines here would be a
         # number that means nothing.
         return None
+    payload = path.read_bytes()
     try:
         payload.decode("utf-8")
     except UnicodeDecodeError:
