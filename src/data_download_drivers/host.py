@@ -2,6 +2,7 @@
 
 `GET  /healthz`              liveness (the Dockerfile's healthcheck)
 `GET  /v1/drivers`           what is installed: name, version, vendor, protocol
+`POST /v1/drivers/install`   write an artefact into the drivers volume
 `POST /v1/sessions`          spawn a driver artefact for one Job
 `DELETE /v1/sessions/{id}`   kill it and report the exit status
 `POST /v1/<verb>`            the eight verbs, forwarded to the session's process
@@ -41,6 +42,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from . import install as installs
 from . import wire
 
 MAX_BODY = 32 * 1024 * 1024
@@ -190,6 +192,14 @@ class SessionManager:
             if artifact.name == name and artifact.version == version:
                 return artifact
         return None
+
+    def install(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Write an artefact into the drivers volume (see `install.py`).
+
+        `drivers_dir` lives here, so installation lives here too: one object
+        knows where artefacts go, and no caller can be handed a path to write.
+        """
+        return installs.install(payload, self.drivers_dir)
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -483,6 +493,9 @@ def make_handler(manager: SessionManager, token: str | None) -> type[BaseHTTPReq
             try:
                 if path == "/v1/sessions":
                     self._json(201, manager.create(body))
+                    return
+                if path == "/v1/drivers/install":
+                    self._json(200, manager.install(body))
                     return
                 if not path.startswith("/v1/"):
                     self._json(404, {"error": {"code": "not_found", "detail": path}})
