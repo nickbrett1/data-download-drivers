@@ -16,7 +16,13 @@ services:
     ports:
       - "127.0.0.1:8831:8831"
     volumes:
-      - /srv/appdata/data-download-drivers/drivers:/drivers:ro
+      # Read-write on purpose: this container runs the driver code *and* is the
+      # only writer of the directory it runs from. `POST /v1/drivers/install`
+      # stages a tree inside this volume and renames it into place, so a
+      # read-only mount refuses every install. The control plane never mounts
+      # this directory at all -- it sends the tree over HTTP and records the
+      # digest that comes back.
+      - /srv/appdata/data-download-drivers/drivers:/drivers
       - /srv/datasets:/datasets
     environment:
       # Set your environment variables here or in a NAS-side .env file

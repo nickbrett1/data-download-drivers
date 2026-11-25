@@ -118,6 +118,19 @@ Configure `dataMounts` in the genproj configuration to mount host directories
 into the container, e.g. `[{ "hostPath": "/volume1/marketdata", "containerPath": "/data", "readOnly": true }]`.
 They are emitted into the compose `volumes:` section (read-only by default).
 
+One mount is deliberately **not** read-only: `/drivers` (host
+`/srv/appdata/data-download-drivers/drivers`). The process that runs the code
+owns the directory it runs from, and `POST /v1/drivers/install` writes into this
+volume -- staging inside it and renaming into place, so the swap is atomic and a
+half-written artefact is never listable. A `:ro` mount here makes every install
+refuse with `install_refused`, which is the failure to look for when a merged
+driver never appears in `GET /v1/drivers`.
+
+Because the image has no `USER`, those files land owned by root. That is fine
+for the writes that follow (the runtime is root in the same container) but it
+means a host-side `rm` needs `sudo`; the alternative, a `user:` in compose,
+would need the host directory chowned to match.
+
 ## 8. Healthchecks, env vars and system packages
 
 All three are config-driven on the `docker-container` capability — the
