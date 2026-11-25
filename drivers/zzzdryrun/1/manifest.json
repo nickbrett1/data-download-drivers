@@ -1,0 +1,9 @@
+{
+  "name": "zzzdryrun",
+  "version": "1",
+  "vendor": "Zzzdryrun",
+  "protocol": 1,
+  "entrypoint": "driver.py",
+  "installed_at": "2026-11-25T00:00:00Z",
+  "note": "A dry-run NBBO vendor: deterministic daily NBBO quote files for exactly one symbol, fabricated locally. No network, no credential, no spend. CSV/NDJSON in, parquet out."
+}
