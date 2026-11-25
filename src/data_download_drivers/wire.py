@@ -79,6 +79,11 @@ UNKNOWN_SESSION = "unknown_session"
 DRIVER_MISSING = "driver_missing"
 SESSION_EXPIRED = "session_expired"
 BUDGET_REFUSED = "budget_refused"
+#: An install that would put the wrong bytes on disk: a manifest that disagrees
+#: with the directory it is landing in, or a version that already exists and was
+#: not installed by this caller. Distinct from `bad_request`, which is a payload
+#: that could not be read at all.
+INSTALL_REFUSED = "install_refused"
 DRIVER_ERROR = "driver_error"
 VENDOR_ERROR = "vendor_error"
 TIMEOUT = "timeout"
@@ -90,6 +95,7 @@ STATUS = {
     DRIVER_MISSING: 409,
     SESSION_EXPIRED: 410,
     BUDGET_REFUSED: 422,
+    INSTALL_REFUSED: 409,
     DRIVER_ERROR: 500,
     VENDOR_ERROR: 502,
     TIMEOUT: 504,

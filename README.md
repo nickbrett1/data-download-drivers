@@ -132,6 +132,7 @@ name. Spec: `data-download-driver-protocol` (vault).
 |---|---|
 | `GET /healthz` | liveness, and the protocol version |
 | `GET /v1/drivers` | what is installed: `name`, `version`, `vendor`, `protocol` |
+| `POST /v1/drivers/install` | write an artefact into the drivers volume (see below) |
 | `POST /v1/sessions` | spawn a driver artefact for one Job; returns a `session_id` |
 | `DELETE /v1/sessions/{id}` | kill it |
 | `POST /v1/<verb>` | `resolve` `cost` `submit` `poll` `list_files` `fetch` `convert` `verify` |
@@ -155,6 +156,37 @@ begin `STUB:`, so no byte it produces can be mistaken for market data. Installin
 a driver is an atomic directory rename into the mounted volume — no image, no
 restart. Discovery runs per request, so a new directory shows up in
 `GET /v1/drivers` on the next call.
+
+### Installing one
+
+The runtime owns the volume, so nothing else writes to it. The control plane
+fetches the merged tree from the forge, then pushes it here as data:
+
+```
+POST /v1/drivers/install            Authorization: Bearer $DRIVER_RUNTIME_TOKEN
+{
+  "name": "zzzdryrun", "version": "1", "vendor": "Zzz",
+  "files": {"manifest.json": "<base64>", "driver.py": "<base64>"},
+  "replace_sha256": "<optional: digest of the install this replaces>"
+}
+```
+
+It answers `{"name", "version", "vendor", "path", "sha256", "replaced"}`. A tree
+without a `manifest.json`, a manifest that names a different driver or version
+than it is installed under, a path that climbs out of the artefact, a protocol
+this host does not speak, or an entrypoint that is not in the tree are each
+refused with `install_refused` (409); a body that cannot be read is
+`bad_request` (400).
+
+A version that already exists is refused rather than silently overwritten,
+unless `replace_sha256` names the digest of the install already there — which is
+how a caller proves the bytes it is replacing are the bytes it installed. The
+`sha256` in the answer is over names and bytes in sorted order, identical to
+`data_download.driver_build.artifact_digest` on the app side.
+
+The tree is written into a temporary directory *inside* the volume and renamed
+into `<name>/<version>/`, so a half-written artefact is never visible to
+discovery, and a refused install leaves nothing behind.
 
 ### `drivers/databento/1/` — the first real vendor
 
@@ -196,7 +228,7 @@ To run the stub:
 ```bash
 docker run --rm -p 127.0.0.1:8831:8831 \
   -e DRIVER_RUNTIME_TOKEN=dev \
-  -v "$PWD/drivers:/drivers:ro" \
+  -v "$PWD/drivers:/drivers" \
   -v /tmp/datasets:/datasets \
   ghcr.io/nickbrett1/data-download-drivers:latest
 ```
@@ -205,7 +237,7 @@ docker run --rm -p 127.0.0.1:8831:8831 \
 
 | variable | default | meaning |
 |---|---|---|
-| `DATA_DOWNLOAD_DRIVERS_DIR` | `/drivers` | artefacts, mounted **read-only** |
+| `DATA_DOWNLOAD_DRIVERS_DIR` | `/drivers` | artefacts, mounted **read-write**: this container is the only writer |
 | `DATA_DOWNLOAD_DATASETS_DIR` | `/datasets` | where bytes land; must be the same path the app uses |
 | `DRIVER_RUNTIME_TOKEN` | unset | bearer token. Unset means **anyone on the network may drive a vendor** — dev only |
 | `DRIVER_VERB_DEADLINE_S` | per-verb table | caps every verb deadline (tests) |
