@@ -1,0 +1,9 @@
+{
+  "name": "databento",
+  "version": "2",
+  "vendor": "Databento",
+  "protocol": 1,
+  "entrypoint": "driver.py",
+  "installed_at": "2026-11-25T00:00:00Z",
+  "note": "The market_data_window driver: a symbol-scoped window of records, split per day, verified against the vendor's own manifest. All three encodings the plan type offers (dbn, csv, json) land as parquet with the source's record count carried across; an encoding outside that set is refused at submit, before anything is spent. A schema the dataset does not carry, and a window that starts before the dataset's own range, are refused for free from the catalogue. Staged over version 1 without changing the DBN trust chain: the vendor's manifest is the evidence, each download is hashed as it lands, and a failed integrity check is reported in the vendor's names."
+}
