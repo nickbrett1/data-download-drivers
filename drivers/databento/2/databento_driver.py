@@ -226,6 +226,12 @@ class DatabentoDriver:
             # travels in the answer, because "no range" and "could not ask"
             # are different facts about a code.
             unavailable = str(exc)
+        if not isinstance(range_, dict):
+            # An SDK that answers a list (or anything else) is answering
+            # "unknown", not a range; `.get` on it must not become the
+            # AttributeError that turns a catalogue wobble into a driver_error.
+            range_ = {}
+            unavailable = unavailable or "the catalogue did not answer a range"
         try:
             schemas = list(client.metadata.list_schemas(dataset) or [])
         except Exception:  # noqa: BLE001 - see above
@@ -498,7 +504,7 @@ class DatabentoDriver:
         if state != DONE_STATE and state in {"queued", "running"}:
             # What is left of the budget after asking, never the interval alone:
             # the pause is what makes the verb's own duration unpredictable.
-            pause = min(float(kwargs.get("interval_s") or 30),
+            pause = min(_seconds(kwargs.get("interval_s"), 30.0),
                         max(0.0, POLL_BUDGET_S - (time.monotonic() - started)))
             if pause > 0:
                 time.sleep(pause)
@@ -547,6 +553,9 @@ class DatabentoDriver:
           no unzipping step in the way.
         """
         job_id = _need(kwargs, "vendor_job_id")
+        # The job id becomes a path component inside `_hoist`; a vendor id with
+        # a separator in it would write outside the directory the host opened.
+        _bare_name(job_id, "vendor_job_id")
         dest = self._dest(_literal(kwargs.get("dest"), "dest"))
         dest.mkdir(parents=True, exist_ok=True)
         written: list[str] = []
@@ -554,6 +563,10 @@ class DatabentoDriver:
             name = str((entry or {}).get("name") or "")
             if not name:
                 continue
+            # A manifest entry is a name inside `dest`, never a path: the host
+            # enforces this on the wire, and the driver enforces it again here
+            # because a boundary checked by one side only is a suggestion.
+            _bare_name(name, "file name")
             self.client.batch.download(
                 job_id=job_id,
                 output_dir=str(dest),
@@ -957,6 +970,35 @@ def _literal(value: Any, name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise WireError(BAD_REQUEST, f"{name} must be a non-empty string")
     return value
+
+
+def _bare_name(value: str, name: str) -> str:
+    """A name inside a directory, not a path that could climb out of it.
+
+    The host already applies this rule to the wire payload; repeating it here
+    costs nothing when it holds and is the only thing that holds when the driver
+    is called directly (as the conformance tests do).
+    """
+    if (
+        not value
+        or value in (".", "..")
+        or "/" in value
+        or "\\" in value
+        or Path(value).is_absolute()
+    ):
+        raise WireError(BAD_REQUEST, f"{name} {value!r} is not a bare file name")
+    return value
+
+
+def _seconds(value: Any, default: float) -> float:
+    """A non-negative duration, or the default. A hint must not crash a verb."""
+    try:
+        seconds = float(value) if value is not None else default
+    except (TypeError, ValueError):
+        return default
+    if seconds != seconds or seconds < 0:  # NaN or negative
+        return default
+    return seconds
 
 
 # -- the request's shape -----------------------------------------------------
