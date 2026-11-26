@@ -51,12 +51,15 @@ The chain of trust, which is the whole reason this file is careful:
 
 The honest limits, written down rather than papered over:
 
-* **`resolve` has no window from the binder.** The Job's `resolve` step carries
-  a dataset, a symbol list and a `stype_in` -- no dates -- while Databento
-  resolves symbology over a window. This uses the request's window when one is
-  passed and otherwise a recent one, which catches an unresolvable symbol
-  cheaply (the point of the step); the authoritative mapping for the requested
-  window is what `submit_job` does anyway, because it is given `stype_in`.
+* **`resolve` uses the request's window, which the binder now always passes.**
+  Databento resolves symbology over a window, and the `market_data_window`
+  binder supplies `start`/`end` on the `resolve` step like it does for the
+  other verbs. The request's window is used whenever both dates parse and
+  `end >= start`, including a same-day (intraday) window where `start == end`;
+  the recent-month fallback exists only for a missing, unparseable or reversed
+  pair. Asking the vendor about a window the request did not name is not
+  merely unhelpful -- for a subscription dataset it is a range the licence does
+  not cover, which the vendor answers with `dataset_unavailable_range`.
 * **The conversion is not free.** DBN is decoded twice (`to_parquet` and the
   record count), so a large day costs two passes. That is the price of a row
   count that comes from the vendor's bytes rather than from the file we just
@@ -281,13 +284,14 @@ class DatabentoDriver:
     def resolve(self, **kwargs: Any) -> dict[str, Any]:
         """Is the symbology resolvable at all? The cheapest failure there is.
 
-        The binder's `resolve` step has no window (see the module docstring), so
-        the fallback is a recent one: a symbol that resolves nowhere in the last
-        month will not resolve in the requested window either. When the caller
-        does pass a window -- `diff`ing a Job by hand, or a future binder that
-        carries it -- the request's own dates are used, and the answer says
-        which window it actually asked about rather than leaving that to be
-        inferred.
+        The binder's `resolve` step carries the request's window (see the module
+        docstring), so the vendor is asked about exactly those dates -- including
+        a same-day window, where `start == end` and the request is one trading
+        day rather than a month. A recent month is used only when the pair is
+        missing, unparseable or reversed; asking for a window the licence does
+        not cover is how this used to fail with `dataset_unavailable_range`.
+        The answer says which window it actually asked about rather than leaving
+        that to be inferred.
         """
         dataset = _need(kwargs, "dataset")
         symbols = _symbols(kwargs)
@@ -297,7 +301,7 @@ class DatabentoDriver:
         if (
             requested_start is not None
             and requested_end is not None
-            and requested_end > requested_start
+            and requested_end >= requested_start
         ):
             start, end = requested_start, requested_end
             note = "the request's"

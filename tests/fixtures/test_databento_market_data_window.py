@@ -493,6 +493,45 @@ def test_resolve_uses_the_requests_window_when_it_is_given(vendor, tmp_path):
     }
 
 
+def test_resolve_asks_about_a_same_day_window(vendor, tmp_path):
+    """A one-day window is `start == end`, not a reversal to fall back from.
+
+    Treating it as "no window" fell back to the last month, which for a
+    subscription dataset is exactly a range the licence does not cover: the
+    vendor answered 422 `dataset_unavailable_range` before quoting anything.
+    A same-day request must reach the vendor with those dates.
+    """
+    answer = _driver(tmp_path).resolve(
+        dataset="GLBX.MDP3",
+        symbols=["ES.c.0"],
+        stype_in="continuous",
+        start="2026-11-25",
+        end="2026-11-25",
+    )
+    call = next(args for verb, args in vendor.calls if verb == "resolve")
+    assert call["start_date"] == date(2026, 11, 25)
+    assert call["end_date"] == date(2026, 11, 25)
+    assert answer["window"] == {
+        "start": "2026-11-25",
+        "end": "2026-11-25",
+        "note": "the request's",
+    }
+
+
+def test_resolve_falls_back_only_for_a_missing_or_reversed_window(vendor, tmp_path):
+    """The fallback is for unusable pairs, not for a legal one-day window."""
+    answer = _driver(tmp_path).resolve(
+        dataset="GLBX.MDP3",
+        symbols=["ES.c.0"],
+        stype_in="continuous",
+        start="2026-11-25",
+        end="2026-11-20",
+    )
+    assert answer["window"]["note"] == "recent, not the request's"
+    call = next(args for verb, args in vendor.calls if verb == "resolve")
+    assert call["start_date"] < call["end_date"]
+
+
 def test_resolve_falls_back_to_a_recent_window_without_one(vendor, tmp_path):
     answer = _driver(tmp_path).resolve(
         dataset="GLBX.MDP3", symbols=["ES.c.0"], stype_in="continuous"
