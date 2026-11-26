@@ -75,6 +75,7 @@ DEADLINES = {
 
 BAD_REQUEST = "bad_request"
 UNAUTHORISED = "unauthorised"
+NOT_FOUND = "not_found"
 UNKNOWN_SESSION = "unknown_session"
 DRIVER_MISSING = "driver_missing"
 SESSION_EXPIRED = "session_expired"
@@ -91,6 +92,7 @@ TIMEOUT = "timeout"
 STATUS = {
     BAD_REQUEST: 400,
     UNAUTHORISED: 401,
+    NOT_FOUND: 404,
     UNKNOWN_SESSION: 404,
     DRIVER_MISSING: 409,
     SESSION_EXPIRED: 410,

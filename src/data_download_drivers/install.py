@@ -31,6 +31,16 @@ Installing is atomic by rename: the tree is written into a temporary directory
 *inside* the drivers volume (same filesystem, so the rename cannot degrade to a
 copy) and renamed into `drivers/<name>/<version>/`. A half-written artefact is
 never visible to discovery.
+
+Removal is the mirror:
+
+    DELETE /v1/drivers/<name>/<version>?sha256=<digest from the install answer>
+
+`remove` refuses unless the digest on disk is the one the caller names, so a
+job can delete only the install it made -- the counterpart of
+`replace_sha256`. That matters because install happens before the probe: a
+driver whose probe stopped the job must be removable, or it stays installed,
+unverified, and is what the next request runs.
 """
 
 from __future__ import annotations
@@ -90,8 +100,7 @@ def digest_of_directory(directory: Path) -> str:
     return digest_of(files)
 
 
-def _segment(payload: dict[str, Any], field: str) -> str:
-    value = payload.get(field)
+def _segment_value(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise wire.WireError(wire.BAD_REQUEST, f"{field} is required")
     value = value.strip()
@@ -101,6 +110,10 @@ def _segment(payload: dict[str, Any], field: str) -> str:
             f"{field} {value!r} is not a plain path segment",
         )
     return value
+
+
+def _segment(payload: dict[str, Any], field: str) -> str:
+    return _segment_value(payload.get(field), field)
 
 
 def _relative(name: Any) -> str:
@@ -276,4 +289,78 @@ def install(payload: dict[str, Any], drivers_dir: Path) -> dict[str, Any]:
         "path": str(target),
         "sha256": installed_sha,
         "replaced": replaced,
+    }
+
+
+def remove(
+    name: str, version: str, expected_sha256: Any, drivers_dir: Path
+) -> dict[str, Any]:
+    """Remove `drivers/<name>/<version>/`, but only the install the caller names.
+
+    This is the mirror of `replace_sha256`: a caller that installed an artefact
+    proved *which* bytes it installed by the digest in the answer, so removal
+    takes the same proof. Without it a job could delete an install it did not
+    make -- the install route writes before the probe runs, so the one caller
+    that most needs to clean up (a driver whose probe stopped the job) is also
+    the one that must not be able to remove someone else's.
+
+    404 when there is no such install, 409 when the digest on disk is not the
+    one the caller recorded. The directory is gone before the answer is sent,
+    so discovery (which re-globs per request) no longer lists it.
+    """
+    name = _segment_value(name, "name")
+    version = _segment_value(version, "version")
+    if not isinstance(expected_sha256, str) or not expected_sha256.strip():
+        raise wire.WireError(
+            wire.BAD_REQUEST,
+            "sha256 is required: name the digest of the install you would remove",
+        )
+    expected = expected_sha256.strip().lower()
+
+    target = drivers_dir / name / version
+    root = drivers_dir.resolve()
+    with _install_lock:
+        # A symlinked directory could point outside the volume; `is_dir`
+        # follows the link, so the resolved-parent check is what keeps removal
+        # inside the drivers root even if a tree smuggled a link in.
+        if target.is_symlink() or not target.is_dir():
+            raise wire.WireError(
+                wire.NOT_FOUND, f"no install at {name}/{version}"
+            )
+        resolved = target.resolve()
+        if resolved == root or root not in resolved.parents:
+            raise wire.WireError(
+                wire.NOT_FOUND, f"no install at {name}/{version}"
+            )
+
+        on_disk = digest_of_directory(resolved)
+        if on_disk != expected:
+            raise wire.WireError(
+                wire.INSTALL_REFUSED,
+                f"not the install you recorded: {name}/{version} on disk has "
+                f"digest {on_disk}, not {expected}",
+            )
+
+        vendor = ""
+        try:
+            manifest = json.loads((resolved / "manifest.json").read_text("utf-8"))
+            if isinstance(manifest, dict):
+                vendor = str(manifest.get("vendor") or "")
+        except (OSError, ValueError):
+            vendor = ""
+
+        shutil.rmtree(resolved)
+        # An empty vendor directory is not an artefact; remove it so the volume
+        # does not accumulate one directory per install ever made.
+        try:
+            resolved.parent.rmdir()
+        except OSError:
+            pass
+
+    return {
+        "name": name,
+        "version": version,
+        "vendor": vendor,
+        "sha256": expected,
+        "removed": True,
     }

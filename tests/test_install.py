@@ -239,6 +239,92 @@ def test_a_refusal_leaves_nothing_behind(run, tmp_path):
     assert list(drivers.glob("*")) == []
 
 
+def test_uninstall_removes_only_the_install_its_digest_names(run, tmp_path):
+    files = a_tree()
+    status, body = run.call("POST", "/v1/drivers/install", payload_for(files))
+    assert status == 200
+    sha = body["sha256"]
+    assert [d["name"] for d in run.call("GET", "/v1/drivers")[1]["drivers"]] == [
+        "probe"
+    ]
+
+    status, removed = run.call("DELETE", f"/v1/drivers/probe/1?sha256={sha}")
+    assert status == 200, removed
+    assert removed["name"] == "probe"
+    assert removed["version"] == "1"
+    assert removed["vendor"] == "Probe"
+    assert removed["sha256"] == sha
+    assert not (tmp_path / "drivers" / "probe" / "1").exists()
+    # Discovery re-globs, so the next listing no longer sees it.
+    assert run.call("GET", "/v1/drivers")[1]["drivers"] == []
+
+
+def test_uninstall_accepts_the_digest_in_the_body(run, tmp_path):
+    files = a_tree()
+    sha = run.call("POST", "/v1/drivers/install", payload_for(files))[1]["sha256"]
+    status, removed = run.call(
+        "DELETE", "/v1/drivers/probe/1", {"sha256": sha}
+    )
+    assert status == 200, removed
+    assert not (tmp_path / "drivers" / "probe" / "1").exists()
+
+
+def test_uninstall_refuses_a_digest_that_is_not_the_install(run, tmp_path):
+    files = a_tree()
+    assert run.call("POST", "/v1/drivers/install", payload_for(files))[0] == 200
+    status, body = run.call("DELETE", f"/v1/drivers/probe/1?sha256={'0' * 64}")
+    assert status == 409
+    assert body["error"]["code"] == wire.INSTALL_REFUSED
+    assert "not the install you recorded" in body["error"]["detail"]
+    # The tree is untouched.
+    assert (tmp_path / "drivers" / "probe" / "1" / "driver.py").read_bytes() == DRIVER
+
+
+def test_uninstall_of_an_unknown_install_is_404(run):
+    status, body = run.call("DELETE", f"/v1/drivers/ghost/9?sha256={'0' * 64}")
+    assert status == 404
+    assert body["error"]["code"] == wire.NOT_FOUND
+
+
+def test_uninstall_without_a_digest_is_refused(run, tmp_path):
+    files = a_tree()
+    assert run.call("POST", "/v1/drivers/install", payload_for(files))[0] == 200
+    status, body = run.call("DELETE", "/v1/drivers/probe/1")
+    assert status == 400
+    assert body["error"]["code"] == wire.BAD_REQUEST
+    assert (tmp_path / "drivers" / "probe" / "1").exists()
+
+
+def test_uninstall_cannot_climb_out_of_the_drivers_root(run, tmp_path):
+    (tmp_path / "outside").mkdir()
+    (tmp_path / "outside" / "1").mkdir()
+    status, _ = run.call(
+        "DELETE", f"/v1/drivers/..%2foutside/1?sha256={'0' * 64}"
+    )
+    assert status in (400, 404)
+    assert (tmp_path / "outside" / "1").is_dir()
+
+
+def test_the_uninstall_route_needs_the_token(tmp_path):
+    runtime = Runtime(tmp_path / "drivers", tmp_path / "datasets", token="s3cret")
+    try:
+        files = a_tree()
+        sha = runtime.call(
+            "POST", "/v1/drivers/install", payload_for(files), token="s3cret"
+        )[1]["sha256"]
+
+        status, _ = runtime.call("DELETE", f"/v1/drivers/probe/1?sha256={sha}")
+        assert status == 401
+        assert (tmp_path / "drivers" / "probe" / "1").is_dir()
+
+        status, body = runtime.call(
+            "DELETE", f"/v1/drivers/probe/1?sha256={sha}", token="s3cret"
+        )
+        assert status == 200, body
+    finally:
+        runtime.close()
+
+
 def test_the_install_route_needs_the_token(tmp_path):
     runtime = Runtime(tmp_path / "drivers", tmp_path / "datasets", token="s3cret")
     try:

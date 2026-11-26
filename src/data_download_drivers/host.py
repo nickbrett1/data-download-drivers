@@ -3,6 +3,7 @@
 `GET  /healthz`              liveness (the Dockerfile's healthcheck)
 `GET  /v1/drivers`           what is installed: name, version, vendor, protocol
 `POST /v1/drivers/install`   write an artefact into the drivers volume
+`DELETE /v1/drivers/<name>/<version>`  remove one, proving its digest
 `POST /v1/sessions`          spawn a driver artefact for one Job
 `DELETE /v1/sessions/{id}`   kill it and report the exit status
 `POST /v1/<verb>`            the eight verbs, forwarded to the session's process
@@ -41,6 +42,7 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs
 
 from . import install as installs
 from . import wire
@@ -200,6 +202,20 @@ class SessionManager:
         knows where artefacts go, and no caller can be handed a path to write.
         """
         return installs.install(payload, self.drivers_dir)
+
+    def uninstall(
+        self, name: str, version: str, sha256: Any
+    ) -> dict[str, Any]:
+        """Remove one artefact, but only the install the caller recorded.
+
+        `install` writes before the probe runs, so an artefact whose probe
+        stopped the job is otherwise left installed and unverified -- listed by
+        discovery and run by the next request instead of being re-authored.
+        This is the verb that lets a job clean up exactly what it made, and
+        `sha256` (the digest install returned) is what stops it removing
+        anything else.
+        """
+        return installs.remove(name, version, sha256, self.drivers_dir)
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -512,15 +528,34 @@ def make_handler(manager: SessionManager, token: str | None) -> type[BaseHTTPReq
         def do_DELETE(self) -> None:  # noqa: N802
             if not self._authorised():
                 return
-            path = self.path.split("?", 1)[0]
-            prefix = "/v1/sessions/"
-            if not path.startswith(prefix):
-                self._json(404, {"error": {"code": "not_found", "detail": path}})
+            raw_path = self.path
+            path, _, query = raw_path.partition("?")
+            if path.startswith("/v1/sessions/"):
+                try:
+                    self._json(200, manager.close(path[len("/v1/sessions/"):]))
+                except wire.WireError as exc:
+                    self._json(exc.status, exc.as_body())
                 return
-            try:
-                self._json(200, manager.close(path[len(prefix):]))
-            except wire.WireError as exc:
-                self._json(exc.status, exc.as_body())
+            # `DELETE /v1/drivers/<name>/<version>` -- the mirror of install.
+            if path.startswith("/v1/drivers/"):
+                parts = path[len("/v1/drivers/"):].split("/")
+                if len(parts) == 2 and all(parts):
+                    sha256 = (parse_qs(query).get("sha256") or [None])[0]
+                    if sha256 is None:
+                        # The digest may also travel in the body, so a client
+                        # that sends JSON for install can send JSON here too.
+                        try:
+                            body = self._body()
+                        except wire.WireError as exc:
+                            self._json(exc.status, exc.as_body())
+                            return
+                        sha256 = body.get("sha256")
+                    try:
+                        self._json(200, manager.uninstall(parts[0], parts[1], sha256))
+                    except wire.WireError as exc:
+                        self._json(exc.status, exc.as_body())
+                    return
+            self._json(404, {"error": {"code": "not_found", "detail": path}})
 
         # -- plumbing -------------------------------------------------------
 

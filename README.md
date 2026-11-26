@@ -133,6 +133,7 @@ name. Spec: `data-download-driver-protocol` (vault).
 | `GET /healthz` | liveness, and the protocol version |
 | `GET /v1/drivers` | what is installed: `name`, `version`, `vendor`, `protocol` |
 | `POST /v1/drivers/install` | write an artefact into the drivers volume (see below) |
+| `DELETE /v1/drivers/<vendor>/<version>` | remove one install, proving its `sha256` (see below) |
 | `POST /v1/sessions` | spawn a driver artefact for one Job; returns a `session_id` |
 | `DELETE /v1/sessions/{id}` | kill it |
 | `POST /v1/<verb>` | `resolve` `cost` `submit` `poll` `list_files` `fetch` `convert` `verify` |
@@ -188,6 +189,32 @@ The tree is written into a temporary directory *inside* the volume and renamed
 into `<name>/<version>/`, so a half-written artefact is never visible to
 discovery, and a refused install leaves nothing behind.
 
+### Uninstalling one
+
+`install` writes the artefact *before* the probe runs, so a driver whose probe
+stops the job is otherwise left installed but unverified: `/v1/drivers` lists
+it and the next request runs it instead of re-authoring. The uninstall route
+lets a job remove exactly the install it made:
+
+```
+DELETE /v1/drivers/<vendor>/<version>?sha256=<digest from the install answer>
+Authorization: Bearer $DRIVER_RUNTIME_TOKEN
+```
+
+The `sha256` is mandatory and is the mirror of `replace_sha256`: it is the
+digest `POST /v1/drivers/install` returned, so a caller can only remove the
+bytes it installed and cannot delete someone else's artefact. It may travel in
+the query string (above) or in a JSON body `{"sha256": "..."}`, and the path
+segment is the directory the artefact was installed under. The response is
+`{"name", "version", "vendor", "sha256", "removed": true}`, sent after the
+directory is gone, so the next `GET /v1/drivers` no longer lists it.
+
+- `404 not_found` — no such install.
+- `409 install_refused` — the digest does not name the install on disk ("not the
+  install you recorded"); nothing is removed.
+- `400 bad_request` — no digest was named, or a path segment is not a plain
+  name (the route only ever removes under the drivers root).
+
 ### `drivers/databento/1/` — the first real vendor
 
 Batch jobs against Databento: submit, poll, download, convert to parquet. The
@@ -212,6 +239,21 @@ Two limits, written down rather than papered over: `resolve` has no window in
 the Job, so it resolves a recent 30 days and says so in its answer (it exists to
 catch an unresolvable symbol before anything is spent); and conversion costs two
 passes because the record count comes from the vendor's bytes.
+
+### `drivers/databento/2/` — the market_data_window driver
+
+The live artefact for the `market_data_window` plan type: a symbol-scoped window
+split per day, in any of `dbn`/`csv`/`json`, landing as parquet.
+
+Its `resolve` step **uses the request's window**, because the binder now always
+passes `start`/`end` for `market_data_window`. The window is used whenever both
+dates parse and `end >= start` — including a same-day (intraday) request where
+`start == end`. A one-day window used to collapse to `start == end`, fail a
+strict `end > start` test and fall back to the last 30 days; for a subscription
+dataset that fallback is a range the licence does not cover, so the vendor
+answered `422 dataset_unavailable_range` before quoting anything. The recent
+fallback now exists only for a missing, unparseable or reversed pair, and the
+answer's `window.note` says `"the request's"` in every other case.
 
 The vendor key is `DATABENTO_API_KEY` in this container's environment. It is
 checked where it is used, not at session creation, so a missing key reaches the
